@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Modern Vibe Player</string>
+    <string name="tagline">200+ features. AI subtitles. Pure vibe.</string>
+    <string name="library">Library</string>
+    <string name="player">Player</string>
+    <string name="settings">Settings</string>
+    <string name="about">About</string>
+    <string name="features">Features</string>
+    <string name="ai_subtitles">AI Subtitles</string>
+    <string name="ai_captions">AI Captions</string>
+    <string name="open_video">Open Video</string>
+    <string name="open_url">Open URL</string>
+    <string name="recent">Recent</string>
+    <string name="folders">Folders</string>
+    <string name="playlists">Playlists</string>
+    <string name="favorites">Favorites</string>
+    <string name="developer_name">Shorif Uddin Piash</string>
+    <string name="developer_facebook">fb.com/piashmsuf</string>
+    <string name="developer_facebook_url">https://fb.com/piashmsuf</string>
+    <string name="about_blurb">Modern Vibe Video Player is a feature-rich Android video player crafted for cinephiles, students, and creators. Powered by Media3/ExoPlayer with AI subtitles &amp; captions, smooth animations, and 200+ tunable features.</string>
+</resources>
