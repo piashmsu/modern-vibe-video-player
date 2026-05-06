@@ -36,9 +36,18 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPicture
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -79,13 +88,17 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.piash.modernvibe.videoplayer.VibeApplication
 import com.piash.modernvibe.videoplayer.ai.AiSubtitleController
+import com.piash.modernvibe.videoplayer.ai.OpenSubtitlesClient
+import com.piash.modernvibe.videoplayer.data.ApiKey
 import com.piash.modernvibe.videoplayer.playback.AudioFx
 import com.piash.modernvibe.videoplayer.playback.EqPreset
 import com.piash.modernvibe.videoplayer.playback.FitMode
 import com.piash.modernvibe.videoplayer.playback.OrientationLock
 import com.piash.modernvibe.videoplayer.playback.PlayerUtils
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private data class SrtCue(val startMs: Long, val endMs: Long, val text: String)
 
@@ -118,8 +131,10 @@ fun PlayerScreen(uri: Uri?) {
     var hudVisibleUntil by remember { mutableLongStateOf(0L) }
 
     var showEqDialog by remember { mutableStateOf(false) }
+    var showSubsDialog by remember { mutableStateOf(false) }
 
     val controller = remember { AiSubtitleController(context, app.keys) }
+    val osClient = remember { OpenSubtitlesClient(app.keys) }
 
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply { playWhenReady = true }
@@ -148,17 +163,11 @@ fun PlayerScreen(uri: Uri?) {
                 }
             }
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
-                audioFx?.release()
-                if (audioSessionId != 0) {
-                    audioFx = runCatching { AudioFx(audioSessionId) }.getOrNull()
-                }
+                // AudioFx is lazily constructed when the equalizer dialog opens to
+                // keep the player's startup path light.
             }
         }
         exoPlayer.addListener(listener)
-        runCatching {
-            val sid = exoPlayer.audioSessionId
-            if (sid != 0) audioFx = AudioFx(sid)
-        }
         onDispose {
             if (uri != null) {
                 app.history.savePosition(uri, exoPlayer.currentPosition, exoPlayer.duration)
@@ -171,15 +180,20 @@ fun PlayerScreen(uri: Uri?) {
     }
 
     LaunchedEffect(exoPlayer) {
+        // 500ms tick is enough for the seekbar / SRT cue match and is half the
+        // CPU/recomposition cost of the previous 250ms loop.
+        var lastSaveAt = 0L
         while (true) {
-            delay(250)
+            delay(500)
             duration = exoPlayer.duration.coerceAtLeast(1L)
             currentPos = exoPlayer.currentPosition
             progress = if (duration > 0) currentPos.toFloat() / duration else 0f
-            if (uri != null && currentPos > 1000 && currentPos % 5_000 < 250) {
+            val now = System.currentTimeMillis()
+            if (uri != null && currentPos > 1000 && now - lastSaveAt > 5_000) {
                 app.history.savePosition(uri, currentPos, duration)
+                lastSaveAt = now
             }
-            if (hudVisibleUntil != 0L && System.currentTimeMillis() > hudVisibleUntil) {
+            if (hudVisibleUntil != 0L && now > hudVisibleUntil) {
                 hudType = HudType.NONE
                 hudVisibleUntil = 0L
             }
@@ -374,8 +388,9 @@ fun PlayerScreen(uri: Uri?) {
                         Icon(Icons.Filled.FastForward, contentDescription = "Forward", tint = Color.White)
                     }
                 }
+                // Display row: aspect / rotation / PiP / speed
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -391,6 +406,29 @@ fun PlayerScreen(uri: Uri?) {
                         hudLabel = orientation.display
                         hudVisibleUntil = System.currentTimeMillis() + 1200
                     }
+                    PlayerActionButton(Icons.Filled.PictureInPicture, "PiP") {
+                        activity?.let {
+                            if (PlayerUtils.supportsPip(it)) {
+                                PlayerUtils.enterPip(it, videoWidth, videoHeight)
+                            }
+                        }
+                    }
+                    PlayerActionButton(Icons.Filled.Speed, "${speed}x") {
+                        speed = when {
+                            speed < 1.25f -> 1.25f
+                            speed < 1.5f -> 1.5f
+                            speed < 2.0f -> 2.0f
+                            else -> 1.0f
+                        }
+                        exoPlayer.setPlaybackSpeed(speed)
+                    }
+                }
+                // Audio / subs row
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     PlayerActionButton(
                         Icons.Filled.Subtitles,
                         if (showAiCaptions) "Subs on" else "Subs off"
@@ -416,22 +454,15 @@ fun PlayerScreen(uri: Uri?) {
                             }
                         }
                     }
-                    PlayerActionButton(Icons.Filled.Equalizer, "EQ") { showEqDialog = true }
-                    PlayerActionButton(Icons.Filled.PictureInPicture, "PiP") {
-                        activity?.let {
-                            if (PlayerUtils.supportsPip(it)) {
-                                PlayerUtils.enterPip(it, videoWidth, videoHeight)
+                    PlayerActionButton(Icons.Filled.Search, "Find subs") { showSubsDialog = true }
+                    PlayerActionButton(Icons.Filled.Equalizer, "EQ") {
+                        if (audioFx == null) {
+                            val sid = exoPlayer.audioSessionId
+                            if (sid != 0) {
+                                audioFx = runCatching { AudioFx(sid) }.getOrNull()
                             }
                         }
-                    }
-                    PlayerActionButton(Icons.Filled.Speed, "${speed}x") {
-                        speed = when {
-                            speed < 1.25f -> 1.25f
-                            speed < 1.5f -> 1.5f
-                            speed < 2.0f -> 2.0f
-                            else -> 1.0f
-                        }
-                        exoPlayer.setPlaybackSpeed(speed)
+                        showEqDialog = true
                     }
                 }
             }
@@ -454,6 +485,24 @@ fun PlayerScreen(uri: Uri?) {
         EqualizerDialog(
             audioFx = audioFx,
             onDismiss = { showEqDialog = false }
+        )
+    }
+
+    if (showSubsDialog) {
+        OnlineSubsDialog(
+            keysSet = app.keys.isSet(ApiKey.OPENSUBTITLES),
+            onDismiss = { showSubsDialog = false },
+            onSrtLoaded = { srt ->
+                aiCues = parseSrt(srt)
+                aiBanner = if (aiCues.isEmpty()) "Loaded subtitle." else ""
+                showSubsDialog = false
+            },
+            search = { q -> osClient.search(q) },
+            download = { fileId ->
+                val link = osClient.fetchDownloadUrl(fileId)
+                osClient.downloadText(link)
+            },
+            downloadFromUrl = { url -> osClient.downloadText(url) },
         )
     }
 }
@@ -577,6 +626,125 @@ private fun EqualizerDialog(audioFx: AudioFx?, onDismiss: () -> Unit) {
                     }
 
                     val _consume = version
+                }
+            }
+        }
+    )
+}
+
+@Composable
+private fun OnlineSubsDialog(
+    keysSet: Boolean,
+    onDismiss: () -> Unit,
+    onSrtLoaded: (String) -> Unit,
+    search: suspend (String) -> List<OpenSubtitlesClient.SubtitleHit>,
+    download: suspend (Long) -> String,
+    downloadFromUrl: suspend (String) -> String,
+) {
+    var query by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf("") }
+    var hits by remember { mutableStateOf<List<OpenSubtitlesClient.SubtitleHit>>(emptyList()) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        title = { Text("Find subtitles online") },
+        text = {
+            Column {
+                if (!keysSet) {
+                    Text(
+                        "OpenSubtitles API key is not set yet. Add it in Settings → AI API Keys to enable search. Direct SRT URL still works.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    label = { Text("Movie / show name") },
+                    enabled = keysSet,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(6.dp))
+                Row {
+                    Button(
+                        onClick = {
+                            error = ""; busy = true
+                            scope.launch {
+                                runCatching { withContext(Dispatchers.IO) { search(query) } }
+                                    .onSuccess { hits = it }
+                                    .onFailure { error = it.message ?: "Search failed" }
+                                busy = false
+                            }
+                        },
+                        enabled = keysSet && query.isNotBlank() && !busy,
+                    ) { Text(if (busy) "Searching…" else "Search") }
+                }
+                if (hits.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    LazyColumn(modifier = Modifier.height(220.dp)) {
+                        items(hits) { hit ->
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp)
+                                    .clickable {
+                                        busy = true; error = ""
+                                        scope.launch {
+                                            runCatching { withContext(Dispatchers.IO) { download(hit.fileId) } }
+                                                .onSuccess { onSrtLoaded(it) }
+                                                .onFailure { error = it.message ?: "Download failed" }
+                                            busy = false
+                                        }
+                                    },
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                            ) {
+                                Column(modifier = Modifier.padding(8.dp)) {
+                                    Text(hit.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        "${hit.language.uppercase()} • ${hit.release} • ${hit.downloads} dl",
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(10.dp))
+                Text("Or paste a direct SRT/VTT URL", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = { Text("https://…") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(6.dp))
+                Button(
+                    onClick = {
+                        busy = true; error = ""
+                        scope.launch {
+                            runCatching { withContext(Dispatchers.IO) { downloadFromUrl(url) } }
+                                .onSuccess { onSrtLoaded(it) }
+                                .onFailure { error = it.message ?: "Download failed" }
+                            busy = false
+                        }
+                    },
+                    enabled = url.isNotBlank() && !busy
+                ) { Text("Load URL") }
+
+                if (error.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+                if (busy) {
+                    Spacer(Modifier.height(6.dp))
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp))
                 }
             }
         }

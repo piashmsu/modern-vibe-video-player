@@ -43,4 +43,5 @@ enum class ApiKey(val prefKey: String, val label: String, val provider: String, 
     GROQ("groq_api_key", "Groq API key", "Groq (Whisper-large-v3)", "https://console.groq.com/keys"),
     GEMINI("gemini_api_key", "Gemini API key", "Google Gemini", "https://aistudio.google.com/app/apikey"),
     OPENAI("openai_api_key", "OpenAI API key", "OpenAI Whisper / GPT", "https://platform.openai.com/api-keys"),
+    OPENSUBTITLES("opensubtitles_api_key", "OpenSubtitles API key", "OpenSubtitles.com", "https://www.opensubtitles.com/en/consumers"),
 }
